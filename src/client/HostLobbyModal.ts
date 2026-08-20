@@ -52,6 +52,7 @@ import {
   sliderToNationsConfig,
   toOptionalNumber,
 } from "./utilities/GameConfigHelpers";
+import { formatLobbyConfigReviewChanges } from "./utilities/LobbyConfigReview";
 
 @customElement("host-lobby-modal")
 export class HostLobbyModal extends BaseModal {
@@ -106,6 +107,8 @@ export class HostLobbyModal extends BaseModal {
   @state() private hostCheatStartingGoldValue: number | undefined = undefined;
   @state() private lobbyCreatorClientID: string = "";
   @state() private lobbyStartAt: number | null = null;
+  @state() private configReviewUntil: number | null = null;
+  @state() private configReviewChanges: string[] = [];
   @state() private serverTimeOffset: number = 0;
   // Whether this user may actually make the lobby public (the API's
   // canCreatePublicLobbies entitlement, or anyone in dev). The toggle itself
@@ -139,6 +142,8 @@ export class HostLobbyModal extends BaseModal {
       this.serverTimeOffset = calculateServerTimeOffset(lobby.serverTime);
     }
     this.lobbyStartAt = lobby.startsAt ?? null;
+    this.configReviewUntil = lobby.configReviewUntil ?? null;
+    this.configReviewChanges = lobby.configReviewChanges ?? [];
     this.lobbyCreatorClientID = lobby.lobbyCreatorClientID ?? "";
     if (lobby.clients) {
       this.clients = lobby.clients;
@@ -293,6 +298,43 @@ export class HostLobbyModal extends BaseModal {
     void this.handlePublicListingToggle(isPublic);
   }
 
+  private renderConfigReviewNotice() {
+    if (this.configReviewUntil === null) {
+      return nothing;
+    }
+    const seconds = getSecondsUntilServerTimestamp(
+      this.configReviewUntil,
+      this.serverTimeOffset,
+    );
+    if (seconds <= 0) {
+      return nothing;
+    }
+
+    return html`
+      <div
+        class="mb-6 flex items-start justify-between gap-4 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4"
+        role="status"
+      >
+        <div class="flex flex-col gap-1">
+          <span class="text-sm font-bold text-amber-100">
+            ${translateText("private_lobby.rules_changed", {
+              settings: formatLobbyConfigReviewChanges(
+                this.configReviewChanges,
+              ).join(", "),
+            })}
+          </span>
+          <span class="text-xs text-amber-200/80">
+            ${translateText("private_lobby.rules_review_time", {
+              time: renderDuration(seconds),
+            })}
+          </span>
+        </div>
+        <span class="shrink-0 text-lg font-bold tabular-nums text-amber-200">
+          ${renderDuration(seconds)}
+        </span>
+      </div>
+    `;
+  }
   protected renderBody() {
     const secondsRemaining =
       this.lobbyStartAt !== null
@@ -463,6 +505,8 @@ export class HostLobbyModal extends BaseModal {
         <div
           class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6 mr-1 mx-auto w-full max-w-5xl"
         >
+          ${this.renderConfigReviewNotice()}
+
           <game-config-settings
             class="block"
             .sectionGapClass=${"space-y-10"}
@@ -832,6 +876,8 @@ export class HostLobbyModal extends BaseModal {
     this.hostCheatStartingGoldValue = undefined;
     this.publiclyListed = false;
     this.showSubscriptionRequired = false;
+    this.configReviewUntil = null;
+    this.configReviewChanges = [];
     this.autoStartAt = null;
   }
 

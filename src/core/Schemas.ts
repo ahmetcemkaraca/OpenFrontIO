@@ -250,6 +250,10 @@ export const GameInfoSchema = z.object({
   clients: z.array(ClientInfoSchema).optional(),
   lobbyCreatorClientID: z.string().optional(),
   startsAt: z.number().optional(),
+  // Private lobbies expose the server-enforced review period after a rule
+  // change so every player can see what changed and how long remains.
+  configReviewUntil: z.number().optional(),
+  configReviewChanges: z.array(z.string().min(1).max(64)).max(32).optional(),
   serverTime: z.number(),
   gameConfig: z.lazy(() => GameConfigSchema).optional(),
   publicGameType: PublicGameTypeSchema.optional(),

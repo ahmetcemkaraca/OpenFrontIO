@@ -1,4 +1,4 @@
-import { html, TemplateResult } from "lit";
+import { html, nothing, TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import { ClientEnv } from "src/client/ClientEnv";
 import {
@@ -40,6 +40,7 @@ import "./components/LobbyConfigItem";
 import "./components/LobbyPlayerView";
 import { modalHeader } from "./components/ui/ModalHeader";
 import { nationsConfigToSlider } from "./utilities/GameConfigHelpers";
+import { formatLobbyConfigReviewChanges } from "./utilities/LobbyConfigReview";
 
 @customElement("join-lobby-modal")
 export class JoinLobbyModal extends BaseModal {
@@ -54,6 +55,8 @@ export class JoinLobbyModal extends BaseModal {
   @state() private currentClientID: string = "";
   @state() private nationCount: number = 0;
   @state() private lobbyStartAt: number | null = null;
+  @state() private configReviewUntil: number | null = null;
+  @state() private configReviewChanges: string[] = [];
   @state() private serverTimeOffset: number = 0;
   @state() private isConnecting: boolean = true;
   @state() private lobbyCreatorClientID: string | null = null;
@@ -153,6 +156,7 @@ export class JoinLobbyModal extends BaseModal {
                 </div>
               `
             : html`
+                ${this.renderConfigReviewNotice()}
                 ${this.gameConfig ? this.renderGameConfig() : html``}
                 ${this.players.length > 0
                   ? html`
@@ -214,6 +218,43 @@ export class JoinLobbyModal extends BaseModal {
     `;
   }
 
+  private renderConfigReviewNotice() {
+    if (this.configReviewUntil === null) {
+      return nothing;
+    }
+    const seconds = getSecondsUntilServerTimestamp(
+      this.configReviewUntil,
+      this.serverTimeOffset,
+    );
+    if (seconds <= 0) {
+      return nothing;
+    }
+
+    return html`
+      <div
+        class="mb-6 flex items-start justify-between gap-4 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4"
+        role="status"
+      >
+        <div class="flex flex-col gap-1">
+          <span class="text-sm font-bold text-amber-100">
+            ${translateText("private_lobby.rules_changed", {
+              settings: formatLobbyConfigReviewChanges(
+                this.configReviewChanges,
+              ).join(", "),
+            })}
+          </span>
+          <span class="text-xs text-amber-200/80">
+            ${translateText("private_lobby.rules_review_time", {
+              time: renderDuration(seconds),
+            })}
+          </span>
+        </div>
+        <span class="shrink-0 text-lg font-bold tabular-nums text-amber-200">
+          ${renderDuration(seconds)}
+        </span>
+      </div>
+    `;
+  }
   private renderJoinForm() {
     return html`
       <div class="custom-scrollbar p-6 space-y-4 mr-1">
@@ -457,6 +498,8 @@ export class JoinLobbyModal extends BaseModal {
     this.players = [];
     this.nationCount = 0;
     this.lobbyStartAt = null;
+    this.configReviewUntil = null;
+    this.configReviewChanges = [];
     this.serverTimeOffset = 0;
     this.lobbyCreatorClientID = null;
     this.isConnecting = true;
@@ -515,6 +558,8 @@ export class JoinLobbyModal extends BaseModal {
     this.currentClientID = "";
     this.nationCount = 0;
     this.lobbyStartAt = null;
+    this.configReviewUntil = null;
+    this.configReviewChanges = [];
     this.serverTimeOffset = 0;
     this.lobbyCreatorClientID = null;
     this.isConnecting = true;
@@ -883,6 +928,10 @@ export class JoinLobbyModal extends BaseModal {
       this.serverTimeOffset = calculateServerTimeOffset(lobby.serverTime);
     }
     this.lobbyStartAt = lobby.startsAt ?? null;
+    this.configReviewUntil =
+      "configReviewUntil" in lobby ? (lobby.configReviewUntil ?? null) : null;
+    this.configReviewChanges =
+      "configReviewChanges" in lobby ? (lobby.configReviewChanges ?? []) : [];
     this.syncCountdownTimer();
     if (lobby.gameConfig) {
       const mapChanged = this.gameConfig?.gameMap !== lobby.gameConfig.gameMap;

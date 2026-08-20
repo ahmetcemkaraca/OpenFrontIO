@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { isDeepStrictEqual } from "node:util";
 import ipAnonymize from "ip-anonymize";
 import { Logger } from "winston";
 import WebSocket from "ws";
@@ -90,6 +91,26 @@ const KICK_REASON_MATCH_CANCELLED = "kick_reason.match_cancelled";
 const KICK_REASON_TOO_MUCH_DATA = "kick_reason.too_much_data";
 const KICK_REASON_INVALID_MESSAGE = "kick_reason.invalid_message";
 
+// Configuration fields that affect lobby presentation, access, or server
+// administration rather than the rules players will play under. Every other
+// config field is deliberately covered so a newly added rule is protected by
+// default once updateGameConfig learns to apply it.
+const LOBBY_CONFIG_METADATA_FIELDS = new Set<keyof GameConfig>([
+  "allowedPublicIds",
+  "anonymizeNames",
+  "disableClanTags",
+  "disableNavMesh",
+  "gameType",
+  "liveStatsEnabled",
+  "maxPlayers",
+  "nameReveals",
+  "nameRevealPublicIds",
+  "publicGameModifiers",
+  "rankedType",
+]);
+
+export const PRIVATE_LOBBY_CONFIG_REVIEW_MS = 30 * 1000;
+
 // Whether the host-only cheat block actually grants anything: mere presence
 // isn't enough, the client can send hostCheats with every field off.
 function hostCheatsEnabled(hc: GameConfig["hostCheats"]): boolean {
@@ -126,6 +147,10 @@ export class GameServer {
   private _hasStarted = false;
   private _startTime: number | null = null;
   private hasReachedMaxPlayerCount: boolean = false;
+  // Set whenever a rule changes after another player has joined. The server
+  // keeps this deadline authoritative; clients only render it.
+  private configReviewUntil?: number;
+  private configReviewChanges: string[] = [];
 
   private endTurnIntervalID: ReturnType<typeof setInterval> | undefined;
 
@@ -408,6 +433,42 @@ export class GameServer {
     );
   }
 
+  private activeConfigReviewUntil(): number | undefined {
+    return this.configReviewUntil !== undefined &&
+      this.configReviewUntil > Date.now()
+      ? this.configReviewUntil
+      : undefined;
+  }
+
+  private changedGameRuleFields(previousConfig: GameConfig): string[] {
+    const fields = new Set<keyof GameConfig>([
+      ...(Object.keys(previousConfig) as (keyof GameConfig)[]),
+      ...(Object.keys(this.gameConfig) as (keyof GameConfig)[]),
+    ]);
+    return [...fields].filter(
+      (field) =>
+        !LOBBY_CONFIG_METADATA_FIELDS.has(field) &&
+        !isDeepStrictEqual(previousConfig[field], this.gameConfig[field]),
+    );
+  }
+
+  private armConfigReview(changedFields: string[]): void {
+    if (changedFields.length === 0 || this.activeClients.length < 2) {
+      return;
+    }
+
+    const reviewWasActive = this.activeConfigReviewUntil() !== undefined;
+    this.configReviewUntil = Date.now() + PRIVATE_LOBBY_CONFIG_REVIEW_MS;
+    this.configReviewChanges = reviewWasActive
+      ? [...new Set([...this.configReviewChanges, ...changedFields])]
+      : changedFields;
+
+    // A countdown that is already armed cannot end before the review window.
+    if (this.startsAt !== undefined) {
+      this.setStartsAt(this.startsAt);
+    }
+  }
+
   public updateGameConfig(gameConfig: Partial<GameConfig>): void {
     if (gameConfig.gameMap !== undefined) {
       this.gameConfig.gameMap = gameConfig.gameMap;
@@ -626,7 +687,10 @@ export class GameServer {
             error: "cannot enable host cheats in a publicly listed lobby",
           });
         }
+        const previousConfig = { ...this.gameConfig };
         this.updateGameConfig(stamped.config);
+        this.armConfigReview(this.changedGameRuleFields(previousConfig));
+        this.broadcastLobbyInfo();
         return finish({ status: 200 });
       }
 
@@ -1119,7 +1183,12 @@ export class GameServer {
   }
 
   public setStartsAt(startsAt: number) {
-    this.startsAt = startsAt;
+    // All paths that arm a start time (host button, listed auto-start, or a
+    // future caller) honour an active rule-review deadline.
+    this.startsAt = Math.max(
+      startsAt,
+      this.activeConfigReviewUntil() ?? startsAt,
+    );
     // Record when the lobby first became visible to players, used to measure lobby fill time.
     this.visibleAt ??= Date.now();
   }
@@ -1671,6 +1740,7 @@ export class GameServer {
   public gameInfo(viewer?: ClientID): GameInfo {
     const friendsFor = this.buildFriendsLookup();
     const hideClanTags = this.gameConfig.disableClanTags ?? false;
+    const configReviewUntil = this.activeConfigReviewUntil();
     return {
       gameID: this.id,
       clients: this.activeClients.map((c) => {
@@ -1703,6 +1773,9 @@ export class GameServer {
       lobbyCreatorClientID: this.lobbyCreatorID,
       gameConfig: this.gameConfig,
       startsAt: this.startsAt,
+      configReviewUntil,
+      configReviewChanges:
+        configReviewUntil === undefined ? undefined : this.configReviewChanges,
       serverTime: Date.now(),
       publicGameType: this.publicGameType,
       listed: this.isPublic() ? undefined : this.listed,
